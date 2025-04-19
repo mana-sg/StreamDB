@@ -1,6 +1,7 @@
 package ipfs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,7 +15,7 @@ import (
 
 // Node represents an IPFS storage node
 type Node struct {
-	shell *shell.Shell
+	Shell *shell.Shell
 	addr  string
 }
 
@@ -33,7 +34,7 @@ func NewNode(ipfsAddr string) (*Node, error) {
 	}
 
 	return &Node{
-		shell: sh,
+		Shell: sh,
 		addr:  ipfsAddr,
 	}, nil
 }
@@ -50,7 +51,7 @@ func (n *Node) Store(ctx context.Context, filepath string) (cid.Cid, <-chan Stre
 	defer file1.Close()
 
 	// Start the add operation
-	cidStr, err := n.shell.Add(file1)
+	cidStr, err := n.Shell.Add(file1)
 	if err != nil {
 		return cid.Cid{}, nil, err
 	}
@@ -72,12 +73,12 @@ func (n *Node) Store(ctx context.Context, filepath string) (cid.Cid, <-chan Stre
 	filename := path.Base(filepath)
 
 	// Add to MFS (Files API) to make it visible in WebUI
-	err = n.shell.FilesMkdir(ctx, "/my-files", shell.FilesMkdir.Parents(true))
+	err = n.Shell.FilesMkdir(ctx, "/my-files", shell.FilesMkdir.Parents(true))
 	if err != nil {
 		return c, nil, fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	err = n.shell.FilesWrite(ctx, "/my-files/"+filename, file2, shell.FilesWrite.Create(true), shell.FilesWrite.Parents(true))
+	err = n.Shell.FilesWrite(ctx, "/my-files/"+filename, file2, shell.FilesWrite.Create(true), shell.FilesWrite.Parents(true))
 	if err != nil {
 		return c, nil, fmt.Errorf("failed to add to MFS: %v", err)
 	}
@@ -96,24 +97,58 @@ func (n *Node) Store(ctx context.Context, filepath string) (cid.Cid, <-chan Stre
 	return c, streamCh, nil
 }
 
+// StoreChunk stores a single chunk to IPFS
+func (n *Node) StoreChunk(ctx context.Context, chunk *Chunk) (string, error) {
+	// Create a reader from chunk data
+	reader := bytes.NewReader(chunk.Data)
+	
+	// Add to IPFS
+	cidStr, err := n.Shell.Add(reader)
+	if err != nil {
+		return "", fmt.Errorf("failed to store chunk %d: %v", chunk.Index, err)
+	}
+	
+	// Pin the content to prevent garbage collection
+	err = n.Shell.Pin(cidStr)
+	if err != nil {
+		return cidStr, fmt.Errorf("failed to pin chunk %d: %v", chunk.Index, err)
+	}
+	
+	// We're not storing in general chunks directory anymore,
+	// only in file-specific directories
+	
+	return cidStr, nil
+}
+
+// RetrieveChunk retrieves a single chunk from IPFS
+func (n *Node) RetrieveChunk(ctx context.Context, cidStr string) ([]byte, error) {
+	reader, err := n.Shell.Cat(cidStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve chunk: %v", err)
+	}
+	defer reader.Close()
+
+	return io.ReadAll(reader)
+}
+
 // Retrieve fetches a file from IPFS by its CID
 func (n *Node) Retrieve(ctx context.Context, c cid.Cid) (io.ReadCloser, error) {
-	return n.shell.Cat(c.String())
+	return n.Shell.Cat(c.String())
 }
 
 // Pin adds a CID to the local storage
 func (n *Node) Pin(ctx context.Context, c cid.Cid) error {
-	return n.shell.Pin(c.String())
+	return n.Shell.Pin(c.String())
 }
 
 // Unpin removes a CID from local storage
 func (n *Node) Unpin(ctx context.Context, c cid.Cid) error {
-	return n.shell.Unpin(c.String())
+	return n.Shell.Unpin(c.String())
 }
 
 // IsAvailable checks if the node is responsive
 func (n *Node) IsAvailable() bool {
-	return n.shell.IsUp()
+	return n.Shell.IsUp()
 }
 
 // GetAddr returns the node's address
